@@ -94,6 +94,8 @@ public class MainVerticle extends AbstractVerticle {
 // Định nghĩa các endpoint API và phương thức xử lý
         router.get("/users").handler(this::getAllUsers); // Lấy tất cả người dùng
         router.get("/users/:id").handler(this::getUserById); // Lấy người dùng theo ID
+        router.delete("/users/:userId").handler(this::deleteByUserId);
+        router.put("/users/:userId").handler(this::updateStudent);
         router.post("/signup").handler(this::signUp); // Đăng ký người dùng mới
         router.post("/login").handler(this::handleLogin); // Xử lý đăng nhập
 
@@ -328,6 +330,98 @@ public class MainVerticle extends AbstractVerticle {
         });
     }
 
-    // Handler to get student by ID
+    // Handler to delete student by ID
+    private void deleteByUserId(RoutingContext context) {
+        String id = context.request().getParam("userId");
+
+        if (id == null || id.isEmpty()) {
+            context.response().setStatusCode(400).end("User ID is required");
+            return;
+        }
+
+        try {
+            Integer userId = Integer.parseInt(id);
+
+            client.getConnection().compose(conn -> {
+                String sql = "DELETE FROM E00T00001 WHERE UserID = @p1";
+                return conn.preparedQuery(sql)
+                        .execute(Tuple.of(userId))
+                        .onComplete(ar -> {
+                            conn.close(); // Close connection after operation
+                            if (ar.succeeded()) {
+                                if (ar.result().rowCount() > 0) {
+                                    context.response()
+                                            .putHeader("content-type", "application/json")
+                                            .end(new JsonObject().put("status", "success").put("message", "User deleted successfully").encode());
+                                } else {
+                                    context.response()
+                                            .setStatusCode(404)
+                                            .end(new JsonObject().put("status", "fail").put("message", "User not found").encode());
+                                }
+                            } else {
+                                System.err.println("Failed to delete user: " + ar.cause().getMessage());
+                                context.response().setStatusCode(500).end("Failed to delete user: " + ar.cause().getMessage());
+                            }
+                        });
+            }).onFailure(err -> {
+                context.response().setStatusCode(500).end("Database connection failed: " + err.getMessage());
+            });
+        } catch (NumberFormatException e) {
+            context.response().setStatusCode(400).end("User ID must be a valid integer");
+        }
+    }
+
+    // Handler to update student by ID
+    private void updateStudent(RoutingContext ctx) {
+        JsonObject body = ctx.getBodyAsJson();
+
+        // Check if the body is null
+        if (body == null) {
+            ctx.response().setStatusCode(400).end("Request body must be in JSON format");
+            return;
+        }
+
+        String idParam = ctx.request().getParam("userId");
+
+        if (idParam == null || idParam.isEmpty()) {
+            ctx.response().setStatusCode(400).end("User ID is required");
+            return;
+        }
+
+        try {
+            Integer userId = Integer.parseInt(idParam);
+            String userName = body.getString("UserName");
+            String userCode = body.getString("UserCode");
+
+            if (userName == null || userCode == null) {
+                ctx.response().setStatusCode(400).end("UserName and UserCode are required");
+                return;
+            }
+
+            client.getConnection().compose(conn -> {
+                String sql = "UPDATE E00T00001 SET UserName = @p1, UserCode = @p2 WHERE UserID = @p3";
+
+                return conn.preparedQuery(sql)
+                        .execute(Tuple.of(userName, userCode, userId))
+                        .onComplete(ar -> {
+                            conn.close();
+                            if (ar.succeeded()) {
+                                if (ar.result().rowCount() > 0) {
+                                    ctx.response().putHeader("content-type", "application/json")
+                                            .end(new JsonObject().put("status", "success").put("message", "User updated successfully").encode());
+                                } else {
+                                    ctx.response().setStatusCode(404).end(new JsonObject().put("status", "fail").put("message", "User not found").encode());
+                                }
+                            } else {
+                                ctx.response().setStatusCode(500).end("Failed to update user: " + ar.cause().getMessage());
+                            }
+                        });
+            }).onFailure(err -> {
+                ctx.response().setStatusCode(500).end("Database connection failed: " + err.getMessage());
+            });
+        } catch (NumberFormatException e) {
+            ctx.response().setStatusCode(400).end("User ID must be a valid integer");
+        }
+    }
 
 }
