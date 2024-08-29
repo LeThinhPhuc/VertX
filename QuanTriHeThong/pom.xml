@@ -17,6 +17,7 @@
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
+
     <dependencies>
         <!-- Vert.x Core -->
         <dependency>
@@ -24,26 +25,33 @@
             <artifactId>vertx-mssql-client</artifactId>
             <version>4.3.0</version>
         </dependency>
-
         <!-- Vert.x Web -->
         <dependency>
             <groupId>io.vertx</groupId>
             <artifactId>vertx-web</artifactId>
             <version>4.3.0</version>
         </dependency>
-
         <!-- Vert.x SQL Client -->
         <dependency>
             <groupId>io.vertx</groupId>
             <artifactId>vertx-sql-client</artifactId>
             <version>4.3.0</version>
         </dependency>
-
         <!-- Microsoft SQL Server JDBC Driver -->
         <dependency>
             <groupId>com.microsoft.sqlserver</groupId>
             <artifactId>mssql-jdbc</artifactId>
             <version>10.2.1.jre8</version> <!-- Hoặc phiên bản mới nhất -->
+        </dependency>
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-auth-jwt</artifactId>
+            <version>4.5.9</version>
+        </dependency>
+        <dependency>
+            <groupId>io.vertx</groupId>
+            <artifactId>vertx-auth-sql-client</artifactId>
+            <version>4.4.9</version>
         </dependency>
     </dependencies>
 
