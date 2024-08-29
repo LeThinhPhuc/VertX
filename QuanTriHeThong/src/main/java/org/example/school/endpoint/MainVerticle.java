@@ -100,33 +100,58 @@ public class MainVerticle extends AbstractVerticle {
         });
     }
 
-    // Handler to get student by ID
-    private void getStudentById(io.vertx.ext.web.RoutingContext context) {
+    private void getStudentById(RoutingContext context) {
         String id = context.request().getParam("id");
-        client.getConnection().compose(conn ->
-                conn.query("SELECT * FROM Student WHERE id ='47.01.104.161'").execute()
-                        .compose(result -> {
-                            conn.close();
-                            // Chuyển đổi RowSet thành JsonArray
-                            JsonArray students = new JsonArray();
-                            for (Row row : result) {
-                                JsonObject studentJson = new JsonObject();
-                                // Giả sử bảng Student có các cột id, name và age
-                                studentJson.put("id", row.getString("id"));
-                                studentJson.put("name", row.getString("name"));
-                                studentJson.put("phone", row.getString("phone"));
-                                students.add(studentJson);
-                            }
-                            return io.vertx.core.Future.succeededFuture(students);
-                        })
-        ).onComplete(ar -> {
+
+        // Kiểm tra xem id có hợp lệ không
+        if (id == null || id.isEmpty()) {
+            context.response().setStatusCode(400).end("Missing or empty 'id' parameter");
+            return;
+        }
+
+        System.out.println("Request ID: " + id); // Log ID nhận được
+        Tuple tuple = Tuple.tuple()
+                .addString(id);
+
+        client.getConnection().compose(conn -> {
+            System.out.println("Got a connection");
+
+            // Tạo câu lệnh SQL với tham số gán tên
+//            String sql = "SELECT * FROM Student WHERE id = "+"'"+id+"'";
+            String sql = "SELECT * FROM Student WHERE id = @p1";
+
+            System.out.println("Got a query: "+ sql);
+            // Tạo prepared query và truyền tham số vào
+            return conn.preparedQuery(sql)
+                    .execute(tuple) // Thay thế tham số với giá trị 'id'
+                    .compose(result -> {
+                        conn.close(); // Đóng kết nối sau khi hoàn tất truy vấn
+                        System.out.println("Query executed successfully");
+
+                        JsonArray students = new JsonArray();
+                        for (Row row : result) {
+                            JsonObject studentJson = new JsonObject();
+                            // Thêm dữ liệu vào JsonObject
+                            studentJson.put("id", row.getString("id"));
+                            studentJson.put("name", row.getString("name"));
+                            studentJson.put("phone", row.getString("phone"));
+                            students.add(studentJson);
+                        }
+                        return io.vertx.core.Future.succeededFuture(students);
+                    });
+        }).onComplete(ar -> {
             if (ar.succeeded()) {
+                System.out.println("Query completed successfully");
                 context.response()
                         .putHeader("content-type", "application/json")
                         .end(ar.result().toString());
             } else {
+                System.out.println("Failure: " + ar.cause().getMessage());
                 context.response().setStatusCode(500).end("Failed to retrieve student");
             }
         });
     }
+
+    // Handler to get student by ID
+
 }
