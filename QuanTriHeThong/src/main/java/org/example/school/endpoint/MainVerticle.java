@@ -96,7 +96,9 @@ public class MainVerticle extends AbstractVerticle {
         router.get("/users/:id").handler(this::getUserById); // Lấy người dùng theo ID
         router.delete("/users/:userId").handler(this::deleteByUserId);
         router.put("/users/:userId").handler(this::updateStudent);
+
         router.post("/signup").handler(this::signUp); // Đăng ký người dùng mới
+
         router.post("/login").handler(this::handleLogin); // Xử lý đăng nhập
 
 // Khởi động máy chủ HTTP và lắng nghe trên cổng 8080
@@ -114,7 +116,6 @@ public class MainVerticle extends AbstractVerticle {
 
     private void signUp(RoutingContext ctx) {
         JsonObject body = ctx.getBodyAsJson();
-
         // Lấy thông tin từ body của yêu cầu
         String username = body.getString("username");
         String password = body.getString("password");
@@ -213,10 +214,10 @@ public class MainVerticle extends AbstractVerticle {
 //    }
 
     private void handleLogin(RoutingContext ctx){
+
         JsonObject body = ctx.getBodyAsJson();
         String username = body.getString("username");
         String password = body.getString("password");
-
         client.getConnection().compose(conn -> {
             // Truy vấn người dùng để lấy salt
             return conn.preparedQuery("SELECT UserID, UserPasswordHash FROM E00T00001 WHERE username = @p1")
@@ -416,6 +417,7 @@ public class MainVerticle extends AbstractVerticle {
                                 ctx.response().setStatusCode(500).end("Failed to update user: " + ar.cause().getMessage());
                             }
                         });
+
             }).onFailure(err -> {
                 ctx.response().setStatusCode(500).end("Database connection failed: " + err.getMessage());
             });
