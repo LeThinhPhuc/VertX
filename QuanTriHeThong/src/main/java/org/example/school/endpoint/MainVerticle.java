@@ -3,16 +3,19 @@ package main.java.org.example.school.endpoint;
 import io.vertx.core.AbstractVerticle;
 import io.vertx.core.Future;
 import io.vertx.core.Vertx;
+import io.vertx.core.buffer.Buffer;
 import io.vertx.core.json.JsonArray;
 import io.vertx.core.json.JsonObject;
 import io.vertx.ext.auth.PubSecKeyOptions;
 import io.vertx.ext.auth.VertxContextPRNG;
+import io.vertx.ext.auth.authentication.AuthenticationProvider;
 import io.vertx.ext.auth.jwt.JWTAuth;
 import io.vertx.ext.auth.jwt.JWTAuthOptions;
 import io.vertx.ext.auth.sqlclient.SqlAuthenticationOptions;
 import io.vertx.ext.web.Router;
 import io.vertx.ext.web.RoutingContext;
 import io.vertx.ext.web.handler.BodyHandler;
+import io.vertx.ext.web.handler.JWTAuthHandler;
 import io.vertx.mssqlclient.MSSQLConnectOptions;
 import io.vertx.mssqlclient.MSSQLPool;
 import io.vertx.sqlclient.PoolOptions;
@@ -21,6 +24,11 @@ import io.vertx.sqlclient.SqlConnection;
 import io.vertx.sqlclient.Tuple;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+
 import io.vertx.ext.auth.sqlclient.SqlAuthentication;
 public class MainVerticle extends AbstractVerticle {
 
@@ -30,6 +38,8 @@ public class MainVerticle extends AbstractVerticle {
     // Cấu hình tùy chọn cho SqlAuthentication, dùng để xác thực người dùng trong cơ sở dữ liệu
     SqlAuthenticationOptions sqlAuthOptions = new SqlAuthenticationOptions();
 
+
+    AuthenticationProvider authenticationProvider;
     // Khai báo đối tượng SqlAuthentication để thực hiện xác thực người dùng
     SqlAuthentication sqlAuth;
 
@@ -50,7 +60,7 @@ public class MainVerticle extends AbstractVerticle {
         MSSQLConnectOptions connectOptions = new MSSQLConnectOptions()
                 .setPort(1433) // Cổng kết nối mặc định cho MSSQL
                 .setHost("localhost") // Địa chỉ máy chủ cơ sở dữ liệu
-                .setDatabase("ODH_Sys_2") // Tên cơ sở dữ liệu
+                .setDatabase("ODH_Sys") // Tên cơ sở dữ liệu
                 .setUser("sa") // Tài khoản người dùng cơ sở dữ liệu
                 .setPassword("sa"); // Mật khẩu người dùng cơ sở dữ liệu
 
@@ -84,6 +94,7 @@ public class MainVerticle extends AbstractVerticle {
                 System.err.println("Failed to get a connection: " + ar.cause().getMessage());
             }
         });
+        authenticationProvider = SqlAuthentication.create(client, sqlAuthOptions);
 
 // Khởi tạo Router để xử lý các yêu cầu HTTP
         Router router = Router.router(vertx);
@@ -92,6 +103,7 @@ public class MainVerticle extends AbstractVerticle {
         router.route().handler(BodyHandler.create());
 
 // Định nghĩa các endpoint API và phương thức xử lý
+        router.route("/users/*").handler(JWTAuthHandler.create(provider));
         router.get("/users").handler(this::getAllUsers); // Lấy tất cả người dùng
         router.get("/users/:id").handler(this::getUserById); // Lấy người dùng theo ID
         router.delete("/users/:userId").handler(this::deleteByUserId);
@@ -101,12 +113,14 @@ public class MainVerticle extends AbstractVerticle {
 
         router.post("/login").handler(this::handleLogin); // Xử lý đăng nhập
 
+        router.post("/changepassword").handler(this::changePassword);
+
 // Khởi động máy chủ HTTP và lắng nghe trên cổng 8080
         vertx.createHttpServer()
                 .requestHandler(router) // Đăng ký router để xử lý các yêu cầu HTTP
-                .listen(8080, result -> {
+                .listen(8081, result -> {
                     if (result.succeeded()) {
-                        System.out.println("Server started on port 8080");
+                        System.out.println("Server started on port 8081");
                     } else {
                         result.cause().printStackTrace(); // In lỗi nếu không khởi động được máy chủ
                     }
@@ -116,111 +130,80 @@ public class MainVerticle extends AbstractVerticle {
 
     private void signUp(RoutingContext ctx) {
         JsonObject body = ctx.getBodyAsJson();
-        // Lấy thông tin từ body của yêu cầu
         String username = body.getString("username");
         String password = body.getString("password");
-        System.out.println("username : " + username);
-
-        // Tạo salt và hash mật khẩu
-        String salt = VertxContextPRNG.current().nextString(32);
-        String hash = sqlAuth.hash(
-                "pbkdf2", // hashing algorithm (OWASP recommended)
-                salt, // secure random salt
-                password // password
-        );
-
-        // Tạo câu lệnh SQL để chèn người dùng và lấy UserID
-        String insertSql = "INSERT INTO E00T00001 (UserName, UserPasswordHash) OUTPUT INSERTED.UserID VALUES (@p1, @p2)";
 
         client.getConnection().compose(conn -> {
-            // Thực hiện câu lệnh chèn và lấy giá trị UserID
-            return conn.preparedQuery(insertSql)
-                    .execute(Tuple.of(username, hash))
+            String checkSql = "SELECT COUNT(*) AS count FROM E00T00001 WHERE UserName = @p1";
+            return conn.preparedQuery(checkSql)
+                    .execute(Tuple.of(username))
+                    .onComplete(ar -> conn.close())
                     .compose(result -> {
-                        conn.close(); // Đóng kết nối sau khi hoàn tất truy vấn
-
-                        if (result.rowCount() > 0) {
-                            // Lấy UserID từ kết quả
-                            Row row = result.iterator().next();
-                            BigDecimal UserID = row.getBigDecimal("UserID");
-                            String token = provider.generateToken(new JsonObject().put("UserID", UserID));
-                            // Trả về UserID
-                            JsonObject response = new JsonObject().put("Token", token);
-
-                            return io.vertx.core.Future.succeededFuture(response);
+                        if (result.iterator().next().getInteger("count") > 0) {
+                            return Future.failedFuture("Username already exists");
                         } else {
-                            return io.vertx.core.Future.failedFuture("Failed to retrieve UserID");
+                            String salt = VertxContextPRNG.current().nextString(32);
+                            String hash = sqlAuth.hash(
+                                    "pbkdf2",
+                                    salt,
+                                    password
+                            );
+
+                            // Chuyển đổi salt và hash thành mảng byte
+                            byte[] saltBytes = salt.getBytes(StandardCharsets.UTF_8);
+                            byte[] hashBytes = hash.getBytes(StandardCharsets.UTF_8);
+
+                            String insertSql = "INSERT INTO E00T00001 (UserName, UserPasswordHash, UserSalt) OUTPUT INSERTED.UserID VALUES (@p1, @p2, @p3)";
+                            return conn.preparedQuery(insertSql)
+                                    .execute(Tuple.of(username, Buffer.buffer(hashBytes), Buffer.buffer(saltBytes)))
+                                    .compose(insertResult -> {
+                                        if (insertResult.rowCount() > 0) {
+                                            Row row = insertResult.iterator().next();
+                                            BigDecimal UserID = row.getBigDecimal("UserID");
+                                            JsonObject response = new JsonObject().put("Message", "Registered success !");
+                                            return Future.succeededFuture(response);
+                                        } else {
+                                            return Future.failedFuture("Failed to retrieve UserID");
+                                        }
+                                    });
                         }
                     });
         }).onComplete(ar -> {
             if (ar.succeeded()) {
-                // Trả về kết quả thành công
                 ctx.response()
                         .putHeader("content-type", "application/json")
                         .end(ar.result().toString());
             } else {
-                // Trả về lỗi nếu có
-                ctx.response().setStatusCode(500).end("Failed to register user: " + ar.cause().getMessage());
+                ctx.response().setStatusCode(400).end(ar.cause().getMessage());
             }
         });
     }
 
 
+
     // Login
-//    private void handleLogin(RoutingContext ctx){
-//        JsonObject body = ctx.getBodyAsJson();
-//        String username = body.getString("username");
-//        String password = body.getString("password");
-//
-//        client.getConnection().compose(conn -> {
-//            // Truy vấn người dùng để lấy salt
-//            return conn.preparedQuery("SELECT UserID, UserPasswordHash FROM E00T00001 WHERE username = @p1")
-//                    .execute(Tuple.of(username))
-//                    .onComplete(ar -> conn.close())
-//                    .compose(res -> {
-//                        if (res.size() == 0) {
-//                            return Future.failedFuture("User not found");
-//                        } else {
-//                            Row row = res.iterator().next();
-//                            String storedHash = row.getString("UserPasswordHash");
-//                            System.out.println("Hash store; "+storedHash);
-//
-//                            // PHẢI THÊM TRƯỜNG LƯU SALT
-//                            String salt = VertxContextPRNG.current().nextString(32);
-//
-//
-//                            // Hash lại mật khẩu vừa nhập với salt từ cơ sở dữ liệu
-//                            String computedHash = sqlAuth.hash("pbkdf2", salt, password);
-//                            BigDecimal UserID = row.getBigDecimal("UserID");
-//                            System.out.println("hash : "+computedHash);
-//                            // So sánh kết quả hash với giá trị trong cơ sở dữ liệu
-//                            if (computedHash.equals(storedHash)) {
-//                                // Mật khẩu đúng, tạo JWT và trả về cho người dùng
-//                                String token = provider.generateToken(new JsonObject().put("UserID", UserID));
-//                                return Future.succeededFuture(token);
-//                            } else {
-//                                return Future.failedFuture("Invalid password");
-//                            }
-//                        }
-//                    });
-//        }).onComplete(ar -> {
-//            if (ar.succeeded()) {
-//                ctx.response().putHeader("content-type", "application/json")
-//                        .end(new JsonObject().put("token", ar.result()).encode());
-//            } else {
-//                ctx.response().setStatusCode(401).end(ar.cause().getMessage());
-//            }
-//        });
-//    }
-
-    private void handleLogin(RoutingContext ctx){
-
+    private void handleLogin(RoutingContext ctx) {
         JsonObject body = ctx.getBodyAsJson();
         String username = body.getString("username");
         String password = body.getString("password");
+        JsonObject authInfo = new JsonObject()
+                .put("username", username)
+                .put("password", password);
+
+        authenticationProvider.authenticate(authInfo)
+                .onSuccess(user -> System.out.println("User: " + user.principal()))
+                .onFailure(err -> {
+                    // Failed!
+                    System.out.println("Khong xac thuc duoc user");
+                });
+
+        if (username == null || password == null) {
+            ctx.response().setStatusCode(400).end("Username and password are required");
+            return;
+        }
+
         client.getConnection().compose(conn -> {
-            // Truy vấn người dùng để lấy salt
-            return conn.preparedQuery("SELECT UserID, UserPasswordHash FROM E00T00001 WHERE username = @p1")
+            return conn.preparedQuery("SELECT UserID, UserPasswordHash, UserSalt FROM E00T00001 WHERE username = @p1")
                     .execute(Tuple.of(username))
                     .onComplete(ar -> conn.close())
                     .compose(res -> {
@@ -228,14 +211,22 @@ public class MainVerticle extends AbstractVerticle {
                             return Future.failedFuture("User not found");
                         } else {
                             Row row = res.iterator().next();
-                            String storedHash = row.getString("UserPasswordHash");
-                            System.out.println("Hash store; "+storedHash);
-                            BigDecimal UserID = row.getBigDecimal("UserID");
+
+                            byte[] storedHashBytes = row.getBuffer("UserPasswordHash").getBytes();
+                            byte[] saltBytes = row.getBuffer("UserSalt").getBytes();
+
+                            // Chuyển đổi mảng byte về chuỗi để hash mật khẩu
+                            String salt = new String(saltBytes, StandardCharsets.UTF_8);
+                            String computedHash = sqlAuth.hash("pbkdf2", salt, password);
+
                             // So sánh kết quả hash với giá trị trong cơ sở dữ liệu
-                                // Mật khẩu đúng, tạo JWT và trả về cho người dùng
+                            if (computedHash.equals(new String(storedHashBytes, StandardCharsets.UTF_8))) {
+                                BigDecimal UserID = row.getBigDecimal("UserID");
                                 String token = provider.generateToken(new JsonObject().put("UserID", UserID));
                                 return Future.succeededFuture(token);
-
+                            } else {
+                                return Future.failedFuture("Invalid password");
+                            }
                         }
                     });
         }).onComplete(ar -> {
@@ -248,6 +239,42 @@ public class MainVerticle extends AbstractVerticle {
         });
     }
 
+
+//    private void handleLogin(RoutingContext ctx){
+//
+//        JsonObject body = ctx.getBodyAsJson();
+//        String username = body.getString("username");
+//        String password = body.getString("password");
+//        client.getConnection().compose(conn -> {
+//            // Truy vấn người dùng để lấy salt
+//            return conn.preparedQuery("SELECT UserID, UserPasswordHash FROM E00T00001 WHERE username = @p1")
+//                    .execute(Tuple.of(username))
+//                    .onComplete(ar -> conn.close())
+//                    .compose(res -> {
+//                        if (res.size() == 0) {
+//                            return Future.failedFuture("User not found");
+//                        } else {
+//                            Row row = res.iterator().next();
+//                            String storedHash = row.getString("UserPasswordHash");
+//                            System.out.println("Hash store; "+storedHash);
+//                            BigDecimal UserID = row.getBigDecimal("UserID");
+//                            // So sánh kết quả hash với giá trị trong cơ sở dữ liệu
+//                                // Mật khẩu đúng, tạo JWT và trả về cho người dùng
+//                                String token = provider.generateToken(new JsonObject().put("UserID", UserID));
+//                                return Future.succeededFuture(token);
+//
+//                        }
+//                    });
+//        }).onComplete(ar -> {
+//            if (ar.succeeded()) {
+//                ctx.response().putHeader("content-type", "application/json")
+//                        .end(new JsonObject().put("token", ar.result()).encode());
+//            } else {
+//                ctx.response().setStatusCode(401).end(ar.cause().getMessage());
+//            }
+//        });
+//    }
+
     // Handler to get all users
     private void getAllUsers(RoutingContext context) {
         client.getConnection().compose(conn ->
@@ -257,11 +284,22 @@ public class MainVerticle extends AbstractVerticle {
                             // Chuyển đổi RowSet thành JsonArray
                             JsonArray users = new JsonArray();
                             for (Row row : result) {
-                                JsonObject userJson = new JsonObject();
-                                // Giả sử bảng Student có các cột id, name và age
-                                userJson.put("UserID", row.getBigDecimal("UserID"));
-                                userJson.put("UserName", row.getString("UserName"));
-                                userJson.put("UserPasswordHash", row.getString("UserPasswordHash"));
+                                JsonObject userJson = new JsonObject()
+                                        .put("UserCode", row.getString("UserCode") != null ? row.getString("UserCode") : "")
+                                        .put("UserName", row.getString("UserName") != null ? row.getString("UserName") : "")
+                                        .put("EmployeeID", row.getBigDecimal("EmployeeID") != null ? row.getBigDecimal("EmployeeID") : BigDecimal.ZERO)
+                                        .put("RecoveryEmail", row.getString("RecoveryEmail") != null ? row.getString("RecoveryEmail") : "")
+                                        .put("IsFirstChangePassword", row.getBoolean("IsFirstChangePassword") != null ? row.getBoolean("IsFirstChangePassword") : false)
+                                        .put("ActivatedDate", row.getLocalDateTime("ActivatedDate") != null ? row.getLocalDateTime("ActivatedDate").toString() : "")
+                                        .put("DivisionIDList", row.getString("DivisionIDList") != null ? row.getString("DivisionIDList") : "")
+                                        .put("IsSystem", row.getBoolean("IsSystem") != null ? row.getBoolean("IsSystem") : false)
+                                        .put("Active", row.getBoolean("Active") != null ? row.getBoolean("Active") : false)
+                                        .put("CreatedDate", row.getLocalDateTime("CreatedDate") != null ? row.getLocalDateTime("CreatedDate").toString() : "")
+                                        .put("CreatedUserID", row.getBigDecimal("CreatedUserID") != null ? row.getBigDecimal("CreatedUserID") : BigDecimal.ZERO)
+                                        .put("UpdatedDate", row.getLocalDateTime("UpdatedDate") != null ? row.getLocalDateTime("UpdatedDate").toString() : "")
+                                        .put("UpdatedUserID", row.getBigDecimal("UpdatedUserID") != null ? row.getBigDecimal("UpdatedUserID") : BigDecimal.ZERO);
+
+
                                 users.add(userJson);
                             }
                             return io.vertx.core.Future.succeededFuture(users);
@@ -277,6 +315,7 @@ public class MainVerticle extends AbstractVerticle {
             }
         });
     }
+
 
     private void getUserById(RoutingContext context) {
         String id = context.request().getParam("id");
@@ -309,11 +348,22 @@ public class MainVerticle extends AbstractVerticle {
 
                         JsonArray users = new JsonArray();
                         for (Row row : result) {
-                            JsonObject userJson = new JsonObject();
-                            // Thêm dữ liệu vào JsonObject
-                            userJson.put("UserID", row.getBigDecimal("UserID"));
-                            userJson.put("UserName", row.getString("UserName"));
-                            userJson.put("UserPasswordHash", row.getString("UserPasswordHash"));
+                            JsonObject userJson = new JsonObject()
+                                    .put("UserCode", row.getString("UserCode") != null ? row.getString("UserCode") : "")
+                                    .put("UserName", row.getString("UserName") != null ? row.getString("UserName") : "")
+                                    .put("EmployeeID", row.getBigDecimal("EmployeeID") != null ? row.getBigDecimal("EmployeeID") : BigDecimal.ZERO)
+                                    .put("RecoveryEmail", row.getString("RecoveryEmail") != null ? row.getString("RecoveryEmail") : "")
+                                    .put("IsFirstChangePassword", row.getBoolean("IsFirstChangePassword") != null ? row.getBoolean("IsFirstChangePassword") : false)
+                                    .put("ActivatedDate", row.getLocalDateTime("ActivatedDate") != null ? row.getLocalDateTime("ActivatedDate").toString() : "")
+                                    .put("DivisionIDList", row.getString("DivisionIDList") != null ? row.getString("DivisionIDList") : "")
+                                    .put("IsSystem", row.getBoolean("IsSystem") != null ? row.getBoolean("IsSystem") : false)
+                                    .put("Active", row.getBoolean("Active") != null ? row.getBoolean("Active") : false)
+                                    .put("CreatedDate", row.getLocalDateTime("CreatedDate") != null ? row.getLocalDateTime("CreatedDate").toString() : "")
+                                    .put("CreatedUserID", row.getBigDecimal("CreatedUserID") != null ? row.getBigDecimal("CreatedUserID") : BigDecimal.ZERO)
+                                    .put("UpdatedDate", row.getLocalDateTime("UpdatedDate") != null ? row.getLocalDateTime("UpdatedDate").toString() : "")
+                                    .put("UpdatedUserID", row.getBigDecimal("UpdatedUserID") != null ? row.getBigDecimal("UpdatedUserID") : BigDecimal.ZERO);
+
+
                             users.add(userJson);
                         }
                         return io.vertx.core.Future.succeededFuture(users);
@@ -372,6 +422,8 @@ public class MainVerticle extends AbstractVerticle {
         }
     }
 
+
+    // Handler to update student by ID
     // Handler to update student by ID
     private void updateStudent(RoutingContext ctx) {
         JsonObject body = ctx.getBodyAsJson();
@@ -417,7 +469,6 @@ public class MainVerticle extends AbstractVerticle {
                                 ctx.response().setStatusCode(500).end("Failed to update user: " + ar.cause().getMessage());
                             }
                         });
-
             }).onFailure(err -> {
                 ctx.response().setStatusCode(500).end("Database connection failed: " + err.getMessage());
             });
@@ -425,5 +476,79 @@ public class MainVerticle extends AbstractVerticle {
             ctx.response().setStatusCode(400).end("User ID must be a valid integer");
         }
     }
+
+    private void changePassword(RoutingContext ctx) {
+        JsonObject body = ctx.getBodyAsJson();
+        String password = body.getString("Password");
+        String newPassword = body.getString("NewPassword");
+        String confirmNewPassword = body.getString("ConfirmNewPassword");
+        String email = body.getString("RecoveryEmail");
+
+        if (password == null || newPassword == null || confirmNewPassword == null) {
+            ctx.response().setStatusCode(400).end("Password, new password and confirm new password are required");
+            return;
+        }
+
+        if (!newPassword.equals(confirmNewPassword)) {
+            ctx.response().setStatusCode(400).end("New Password and Confirm New Password don't match");
+            return;
+        }
+
+
+        client.getConnection().compose(conn ->
+                conn.preparedQuery("SELECT UserSalt, UserPasswordHash FROM E00T00001 WHERE RecoveryEmail = @p1")
+                        .execute(Tuple.of(email))
+                        .onComplete(ar -> conn.close())
+                        .compose(res -> {
+                            if (res.size() == 0) {
+                                return Future.failedFuture("User not found");
+                            } else {
+                                Row row = res.iterator().next();
+
+                                byte[] storedHashBytes = row.getBuffer("UserPasswordHash").getBytes();
+                                byte[] saltBytes = row.getBuffer("UserSalt").getBytes();
+
+                                // Chuyển đổi mảng byte về chuỗi để hash mật khẩu
+                                String salt = new String(saltBytes, StandardCharsets.UTF_8);
+                                String computedHash = sqlAuth.hash("pbkdf2", salt, password);
+
+
+
+                                if (computedHash.equals(new String(storedHashBytes, StandardCharsets.UTF_8))) {
+                                    // Hash mật khẩu mới với salt cũ
+                                    String newHash = sqlAuth.hash("pbkdf2", salt, newPassword);
+
+                                    return conn.preparedQuery("UPDATE E00T00001 SET UserPasswordHash = @p1, IsFirstChangePassword = @p2 WHERE RecoveryEmail = @p3")
+                                            .execute(Tuple.of(Buffer.buffer(newHash.getBytes(StandardCharsets.UTF_8)), true, email))
+                                            .onComplete(ar2 -> {
+                                                conn.close();
+                                                if (ar2.succeeded()) {
+                                                    if (ar2.result().rowCount() > 0) {
+                                                        ctx.response().putHeader("content-type", "application/json")
+                                                                .end(new JsonObject().put("status", "success").put("message", "Password changed successfully").encode());
+                                                    } else {
+                                                        ctx.response().setStatusCode(404).end(new JsonObject().put("status", "fail").put("message", "User not found").encode());
+                                                    }
+                                                } else {
+                                                    ctx.response().setStatusCode(500).end("Failed to change password: " + ar2.cause().getMessage());
+                                                }
+                                            });
+                                } else {
+                                    return Future.failedFuture("Current password is incorrect");
+                                }
+                            }
+                        })
+        ).onComplete(ar -> {
+            if (ar.succeeded()) {
+                ctx.response().putHeader("content-type", "application/json")
+                        .end(new JsonObject().put("message", "Password changed successfully").encode());
+            } else {
+                ctx.response().setStatusCode(401).end(ar.cause().getMessage());
+            }
+        });
+    }
+
+
+
 
 }
