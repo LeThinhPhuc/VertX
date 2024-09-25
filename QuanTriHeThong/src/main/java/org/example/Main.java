@@ -1,7 +1,6 @@
 package main.java.org.example;
 
 import io.vertx.core.Vertx;
-import main.java.org.example.school.endpoint.KhoLamSan;
 import main.java.org.example.school.endpoint.MainVerticle;
 
 // Press Shift twice to open the Search Everywhere dialog and type `show whitespaces`,
@@ -9,8 +8,7 @@ import main.java.org.example.school.endpoint.MainVerticle;
 public class Main {
     public static void main(String[] args) {
         Vertx vertx = Vertx.vertx();
-//        vertx.deployVerticle(new MainVerticle());
-        vertx.deployVerticle(new KhoLamSan());
+        vertx.deployVerticle(new MainVerticle());
 
     }
 }
